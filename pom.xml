@@ -77,14 +77,6 @@
             <artifactId>nimbus-jose-jwt</artifactId>
             <version>${jwt.nimbus.version}</version>
         </dependency>
-        <dependency>
-            <groupId>com.forgerock</groupId>
-            <artifactId>OpenAM</artifactId>
-            <version>${am.version}</version>
-            <type>war</type>
-            <scope>system</scope>
-            <systemPath>${project.basedir}/OpenAM-6.5.1.war</systemPath>
-        </dependency>
     </dependencies>
 
     <repositories>
@@ -98,22 +90,4 @@
         </repository>
     </repositories>
 
-    <build>
-
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-war-plugin</artifactId>
-                <version>3.2.3</version>
-                <configuration>
-                    <overlays>
-                        <overlay>
-                            <groupId>com.forgerock.am</groupId>
-                            <artifactId>eidasAuthNode</artifactId>
-                        </overlay>
-                    </overlays>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
 </project>
