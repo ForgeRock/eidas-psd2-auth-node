@@ -33,7 +33,7 @@
         <maven.compiler.target>1.8</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
-        <eidas.psd2.sdk.version>1.5-SNAPSHOT</eidas.psd2.sdk.version>
+        <eidas.psd2.sdk.version>1.7</eidas.psd2.sdk.version>
 
         <jwt.nimbus.version>7.3</jwt.nimbus.version>
     </properties>

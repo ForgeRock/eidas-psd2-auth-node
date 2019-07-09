@@ -54,9 +54,9 @@ import com.google.inject.assistedinject.Assisted;
 /**
  * A node that collect EIDAS and PSD2 certificate attribute and put them into the shared state and user session
  */
-@Node.Metadata(outcomeProvider  = AbstractDecisionNode.OutcomeProvider.class,
-               configClass      = eidasAuthNode.Config.class)
-public class eidasAuthNode extends AbstractDecisionNode {
+@Node.Metadata(outcomeProvider  = SingleOutcomeNode.OutcomeProvider.class,
+               configClass      = EidasAuthNode.Config.class)
+public class EidasAuthNode extends SingleOutcomeNode {
 
 
     public static final String BEGIN_CERT = "-----BEGIN CERTIFICATE-----";
@@ -70,7 +70,7 @@ public class eidasAuthNode extends AbstractDecisionNode {
     public static final String PSD2_ROLES = "psd2_roles";
 
 
-    private final Logger logger = LoggerFactory.getLogger(eidasAuthNode.class);
+    private final Logger logger = LoggerFactory.getLogger(EidasAuthNode.class);
     private final Config config;
     private final Realm realm;
 
@@ -105,7 +105,7 @@ public class eidasAuthNode extends AbstractDecisionNode {
     }
 
     @Inject
-    public eidasAuthNode(@Assisted Config config, @Assisted Realm realm) throws NodeProcessException {
+    public EidasAuthNode(@Assisted Config config, @Assisted Realm realm) throws NodeProcessException {
         this.config = config;
         this.realm = realm;
     }
@@ -117,14 +117,14 @@ public class eidasAuthNode extends AbstractDecisionNode {
         Optional<String> psd2CertPem = getFirstValueHeader(context.request, config.clientCertificateInPemFormatHeader());
         Optional<String> psd2JWKSerialised = getFirstValueHeader(context.request, config.clientCertificateInJWKFormatHeader());
 
-        Action.ActionBuilder actionBuilder = goTo(true);
+        Action.ActionBuilder actionBuilder = goToNext();
         JsonValue shareState = context.sharedState.copy();
 
         Optional<X509Certificate> hasCert = getX509CertificateFromRequest(psd2CertPem, psd2JWKSerialised, actionBuilder, shareState);
 
         if (!hasCert.isPresent()) {
-            logger.debug("No certificate received => Node authentication failed.");
-            return goTo(false).build();
+            logger.debug("No certificate received");
+            return goToNext().build();
         }
         X509Certificate clientCertificate = hasCert.get();
         if (logger.isDebugEnabled()) {

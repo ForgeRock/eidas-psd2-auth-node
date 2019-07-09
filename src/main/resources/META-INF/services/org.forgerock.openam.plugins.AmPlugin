@@ -14,4 +14,4 @@
 # Copyright 2019 ForgeRock AS.
 #
 
-com.forgerock.eidasAuthNode.eidasAuthNodePlugin
+com.forgerock.eidasAuthNode.EidasAuthNodePlugin
