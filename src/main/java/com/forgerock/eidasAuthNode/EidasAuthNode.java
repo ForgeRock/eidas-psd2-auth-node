@@ -17,8 +17,27 @@
 
 package com.forgerock.eidasAuthNode;
 
-import static org.forgerock.openam.auth.node.api.SharedStateConstants.USERNAME;
 
+import com.forgerock.cert.Psd2CertInfo;
+import com.forgerock.cert.eidas.EidasCertType;
+import com.forgerock.cert.exception.InvalidEidasCertType;
+import com.forgerock.cert.exception.InvalidPsd2EidasCertificate;
+import com.forgerock.cert.exception.NoSuchRDNInField;
+import com.forgerock.cert.psd2.Psd2QcStatement;
+import com.forgerock.cert.psd2.RolesOfPsp;
+import com.forgerock.cert.utils.CertificateUtils;
+import com.google.inject.assistedinject.Assisted;
+import com.nimbusds.jose.jwk.JWK;
+import org.forgerock.json.JsonValue;
+import org.forgerock.openam.annotations.sm.Attribute;
+import org.forgerock.openam.auth.node.api.*;
+import org.forgerock.openam.core.realms.Realm;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.inject.Inject;
+import javax.security.auth.callback.PasswordCallback;
+import javax.security.auth.callback.TextOutputCallback;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -31,33 +50,32 @@ import java.text.ParseException;
 import java.util.*;
 import java.util.stream.Collectors;
 
-import javax.inject.Inject;
-
-import com.forgerock.cert.Psd2CertInfo;
-import com.forgerock.cert.eidas.EidasCertType;
-import com.forgerock.cert.exception.InvalidEidasCertType;
-import com.forgerock.cert.exception.InvalidPsd2EidasCertificate;
-import com.forgerock.cert.exception.NoSuchRDNInField;
-import com.forgerock.cert.psd2.Psd2QcStatement;
-import com.forgerock.cert.psd2.RolesOfPsp;
-import com.forgerock.cert.utils.CertificateUtils;
-import com.nimbusds.jose.jwk.JWK;
-import org.forgerock.json.JsonValue;
-import org.forgerock.openam.annotations.sm.Attribute;
-import org.forgerock.openam.auth.node.api.*;
-import org.forgerock.openam.core.realms.Realm;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.google.inject.assistedinject.Assisted;
+import static java.util.stream.Collectors.toMap;
+import static org.forgerock.json.JsonValue.*;
+import static org.forgerock.json.JsonValue.field;
+import static org.forgerock.openam.auth.node.api.Action.send;
+import static org.forgerock.openam.auth.node.api.SharedStateConstants.USERNAME;
 
 /**
  * A node that collect EIDAS and PSD2 certificate attribute and put them into the shared state and user session
  */
 @Node.Metadata(outcomeProvider  = SingleOutcomeNode.OutcomeProvider.class,
-               configClass      = EidasAuthNode.Config.class)
+        configClass      = EidasAuthNode.Config.class)
 public class EidasAuthNode extends SingleOutcomeNode {
+    /**
+     * Key to store and access the userinfo data in the shared state.
+     */
+    public static final String USER_INFO_SHARED_STATE_KEY = "userInfo";
 
+    /**
+     * Key to store and access the names data in the shared state.
+     */
+    public static final String USER_NAMES_SHARED_STATE_KEY = "userNames";
+
+    /**
+     * Key to store and access the user attributes data in the shared state.
+     */
+    public static final String ATTRIBUTES_SHARED_STATE_KEY = "attributes";
 
     public static final String BEGIN_CERT = "-----BEGIN CERTIFICATE-----";
     public static final String END_CERT = "-----END CERTIFICATE-----";
@@ -65,6 +83,7 @@ public class EidasAuthNode extends SingleOutcomeNode {
     private static String CLIENT_CERTIFICATE_HEADER_NAME = "x-client-cert";
     private static String CLIENT_CERTIFICATE_PEM_HEADER_NAME = "x-client-pem-cert";
 
+    public static final String UID = "uid";
     public static final String APP_ID = "app_id";
     public static final String ORG_ID = "org_id";
     public static final String PSD2_ROLES = "psd2_roles";
@@ -98,9 +117,15 @@ public class EidasAuthNode extends SingleOutcomeNode {
         default boolean requireSpecificEIDASTypes() {
             return false;
         }
+
         @Attribute(order = 500)
-        default List<EidasCertType> requestedEIDASTypes() {
-            return Arrays.asList(EidasCertType.values());
+        default List<String> requestedEIDASTypes() {
+            return Arrays.asList(EidasCertType.values()).stream().map(t -> t.name()).collect(Collectors.toList());
+        }
+
+        @Attribute(order = 400)
+        default String requestCertificate() {
+            return "Setup your client certificate to your web browser";
         }
     }
 
@@ -124,7 +149,7 @@ public class EidasAuthNode extends SingleOutcomeNode {
 
         if (!hasCert.isPresent()) {
             logger.debug("No certificate received");
-            return goToNext().build();
+            return collectCertificate(context, config);
         }
         X509Certificate clientCertificate = hasCert.get();
         if (logger.isDebugEnabled()) {
@@ -151,23 +176,45 @@ public class EidasAuthNode extends SingleOutcomeNode {
                     throw new NodeProcessException("No EIDAS certificate type found");
                 }
                 logger.debug("EIDAS certificate type {}", psd2CertInfo.getEidasCertType().get());
-                if (config.requestedEIDASTypes().contains(psd2CertInfo.getEidasCertType().get())) {
+                if (config.requestedEIDASTypes().contains(psd2CertInfo.getEidasCertType().get().name())) {
                     logger.debug("This EIDAS type is in our whitelist");
                 } else {
                     throw new NodeProcessException("EIDAS type " + psd2CertInfo.getEidasCertType().get() + " not accepted. Please use one of the type: " + config.requestedEIDASTypes());
                 }
             }
 
+            //Map certificate attributes to user session and shared state
+            mapCertificateAttributeToSessionAndSharedState(actionBuilder, shareState, psd2CertInfo);
+
             //Define the username if not set yet
             if (!shareState.contains(USERNAME)) {
+                String username =  psd2CertInfo.getApplicationId();
                 logger.debug("No username defined, use the application id {} from the certificate as identifier", psd2CertInfo.getApplicationId());
-                shareState.put(USERNAME, psd2CertInfo.getApplicationId());
+                shareState.put(USERNAME, username);
+                logger.debug("We create a user info like output, so you can append a provision dynamic account node after this node.");
+                Map<String, List<String>> userAttributes = new HashMap<>();
+                userAttributes.put(UID, Collections.singletonList(username));
+                userAttributes.put(USERNAME, Collections.singletonList(username));
+
+                if (shareState.get(APP_ID).isNotNull()) {
+                    userAttributes.put(APP_ID, Collections.singletonList(shareState.get(APP_ID).asString()));
+                }
+                if (shareState.get(ORG_ID).isNotNull()) {
+                    userAttributes.put(ORG_ID, Collections.singletonList(shareState.get(ORG_ID).asString()));
+                }
+                if (shareState.get(PSD2_ROLES).isNotNull()) {
+                    userAttributes.put(PSD2_ROLES, shareState.get(PSD2_ROLES).asList(String.class));
+                }
+                logger.debug("The user info: {}", userAttributes);
+
+                shareState.put(USER_INFO_SHARED_STATE_KEY, json(object(
+                        field(ATTRIBUTES_SHARED_STATE_KEY, userAttributes),
+                        field(USER_NAMES_SHARED_STATE_KEY, Collections.singletonList(username))
+
+                )));
             } else {
                 logger.debug("Username already populated: {}", shareState.get(USERNAME));
             }
-
-            //Map certificate attributes to user session and shared state
-            mapCertificateAttributeToSessionAndSharedState(actionBuilder, shareState, psd2CertInfo);
 
             return actionBuilder.replaceSharedState(shareState).build();
         } catch (InvalidPsd2EidasCertificate | NoSuchRDNInField | CertificateEncodingException | InvalidEidasCertType e) {
@@ -185,20 +232,25 @@ public class EidasAuthNode extends SingleOutcomeNode {
 
         //Map Organisation ID
         psd2CertInfo.getOrganizationId().ifPresent(organisationId -> {
-                    actionBuilder.putSessionProperty(ORG_ID, organisationId);
-                    shareState.put(ORG_ID, organisationId);
-                    logger.debug("PSD2 organisation ID behind certificate: {}", organisationId);
-                });
+            actionBuilder.putSessionProperty(ORG_ID, organisationId);
+            shareState.put(ORG_ID, organisationId);
+            logger.debug("PSD2 organisation ID behind certificate: {}", organisationId);
+        });
 
         //Map PSD2 roles
         Optional<Psd2QcStatement> psd2QcStatementOpt = psd2CertInfo.getPsd2QCStatement();
         if (psd2QcStatementOpt.isPresent()) {
             Psd2QcStatement psd2QcStatement = psd2QcStatementOpt.get();
             RolesOfPsp roles = psd2QcStatement.getRoles();
-            shareState.put(PSD2_ROLES, roles.getRolesOfPsp().stream().map(r -> r.getRole()).collect(Collectors.toList()));
+            shareState.put(PSD2_ROLES, roles.getRolesOfPsp().stream().map(r -> r.getRole().name()).collect(Collectors.toList()));
             actionBuilder.putSessionProperty(PSD2_ROLES, roles.getRolesOfPsp().stream().map(r -> r.getRole().name()).collect(Collectors.joining(",")));
             logger.debug("PSD2 roles behind certificate: {}", roles.getRolesOfPsp().stream().map(r -> r.getRole()).collect(Collectors.toList()));
         }
+    }
+
+
+    private Map<String, ArrayList<String>> convertToMapOfList(Map<String, Set<String>> mapToConvert) {
+        return mapToConvert.entrySet().stream().collect(toMap(Map.Entry::getKey, e -> new ArrayList<>(e.getValue())));
     }
 
     private Optional<X509Certificate> getX509CertificateFromRequest(Optional<String> psd2CertPem, Optional<String> psd2JWKSerialised, Action.ActionBuilder actionBuilder, JsonValue shareState) {
@@ -206,7 +258,7 @@ public class EidasAuthNode extends SingleOutcomeNode {
         logger.debug("Priority is to load the certificate from the pem header {}. If empty, try the JWK format from header {}",
                 config.clientCertificateInPemFormatHeader(),
                 config.clientCertificateInJWKFormatHeader()
-                );
+        );
 
         logger.debug("Trying Pem format");
         if (psd2CertPem.isPresent()) {
@@ -297,5 +349,10 @@ public class EidasAuthNode extends SingleOutcomeNode {
                 }
             }
         }
+    }
+
+    private Action collectCertificate(TreeContext context, Config config) {
+        TextOutputCallback textOutputCallback = new TextOutputCallback(TextOutputCallback.INFORMATION, config.requestCertificate());
+        return send(textOutputCallback).build();
     }
 }
