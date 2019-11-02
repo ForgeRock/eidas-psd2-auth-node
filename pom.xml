@@ -35,7 +35,7 @@
 
         <eidas.psd2.sdk.version>1.12</eidas.psd2.sdk.version>
 
-        <jwt.nimbus.version>7.3</jwt.nimbus.version>
+        <jwt.nimbus.version>7.9</jwt.nimbus.version>
     </properties>
 
     <dependencyManagement>
